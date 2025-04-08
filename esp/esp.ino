@@ -1,48 +1,30 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
-#include <WebSocketsServer.h>
 
 #define SCAN_INTERVAL 100  // milliseconds between scans
-
-// Initialize WebSocket server on port 81
-WebSocketsServer webSocket = WebSocketsServer(81);
-
-// WiFi configuration - create an access point
-const char* ap_ssid = "ESP32_Spectrum";
-const char* ap_password = "spectrum123";
+#define SERIAL_BAUD 115200
 
 // Variables to store scan results
 uint8_t channelValues[14] = {0}; // For 14 WiFi channels
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(SERIAL_BAUD);
   
-  // Initialize WiFi in AP mode
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(ap_ssid, ap_password);
+  // Initialize WiFi in station mode for scanning
+  WiFi.mode(WIFI_STA);
   
-  Serial.println("ESP32 Spectrum Analyzer");
-  Serial.print("Access Point IP: ");
-  Serial.println(WiFi.softAPIP());
-  
-  // Initialize WebSocket server
-  webSocket.begin();
-  webSocket.onEvent(webSocketEvent);
-  Serial.println("WebSocket server started");
+  Serial.println("ESP32 Serial Spectrum Analyzer");
   
   // Set WiFi to promiscuous mode for better scanning
   esp_wifi_set_promiscuous(true);
 }
 
 void loop() {
-  // Handle WebSocket communications
-  webSocket.loop();
-  
   // Perform WiFi scan for energy levels
   scanWiFiChannels();
   
-  // Send data through WebSocket
+  // Send data through Serial
   sendSpectrumData();
   
   delay(SCAN_INTERVAL);
@@ -90,42 +72,30 @@ void scanWiFiChannels() {
     delete[] ap_records;
   }
   
-  // Optionally, we can also get raw energy data for each channel
-  // This requires ESP-IDF and is more complex but provides better spectrum analysis
-  // The simplified version above is adequate for most purposes
+  // Note: For more advanced spectrum analysis, we could also use
+  // the esp_wifi_scan_get_channel_metrics API if available in ESP-IDF
 }
 
 void sendSpectrumData() {
-  // Create JSON with channel data
-  String jsonData = "{\"spectrum\":[";
+  // Send data as a simple, compact serial protocol
+  // Start marker, 14 values, end marker
+  Serial.print("S"); // Start marker
   
   for (int i = 0; i < 14; i++) {
-    jsonData += channelValues[i];
-    if (i < 13) jsonData += ",";
+    // Send each value as a byte
+    Serial.write(channelValues[i]);
   }
   
-  jsonData += "]}";
+  Serial.print("E"); // End marker
   
-  // Send to all connected WebSocket clients
-  webSocket.broadcastTXT(jsonData);
-  
-  // Also print to serial for debugging
-  Serial.println(jsonData);
-}
-
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-  switch(type) {
-    case WStype_DISCONNECTED:
-      Serial.printf("[%u] Disconnected!\n", num);
-      break;
-    case WStype_CONNECTED:
-      {
-        IPAddress ip = webSocket.remoteIP(num);
-        Serial.printf("[%u] Connected from %d.%d.%d.%d\n", num, ip[0], ip[1], ip[2], ip[3]);
-      }
-      break;
-    case WStype_TEXT:
-      // Handle any commands from the client
-      break;
+  // Optionally send a more human-readable format for debugging
+  // Uncomment if needed:
+  /*
+  Serial.print("Spectrum: ");
+  for (int i = 0; i < 14; i++) {
+    Serial.print(channelValues[i]);
+    Serial.print(" ");
   }
+  Serial.println();
+  */
 }

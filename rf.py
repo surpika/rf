@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
-import json
-import websocket
+import serial.tools.list_ports
+import serial
+from serial.serialutil import SerialException
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FuncAnimation
@@ -11,45 +13,63 @@ import argparse
 # Global variable to store the latest spectrum data
 spectrum_data = [0] * 14  # Initialize with zeros for 14 WiFi channels
 data_lock = threading.Lock()  # Lock for thread-safe access
+serial_port = None
 
-# Connect to the ESP32 WebSocket server
-def connect_websocket(esp32_ip):
-    ws_url = f"ws://{esp32_ip}:81"
+# Connect to the ESP32 via serial
+def connect_serial(port, baud_rate):
+    try:
+        ser = serial.Serial(port, baud_rate, timeout=1)
+        print(f"Connected to {port} at {baud_rate} baud")
+        return ser
+    except SerialException as e:
+        print(f"Error opening serial port: {e}")
+        exit(1)
+    except Exception as e:
+        print(f"Unexpected error opening serial port: {e}")
+        exit(1)
+
+# Serial reading thread function
+def read_serial_data(ser):
+    global spectrum_data
     
-    def on_message(ws, message):
-        global spectrum_data
+    # Buffer for collecting data
+    buffer = bytearray()
+    reading_data = False
+    
+    while True:
         try:
-            data = json.loads(message)
-            with data_lock:
-                spectrum_data = data["spectrum"]
-            print(f"Received: {spectrum_data}")
-        except json.JSONDecodeError:
-            print(f"Failed to parse message: {message}")
-        except KeyError:
-            print(f"Missing expected key in data: {message}")
-    
-    def on_error(ws, error):
-        print(f"Error: {error}")
-    
-    def on_close(ws, close_status_code, close_msg):
-        print("Connection closed")
-    
-    def on_open(ws):
-        print(f"Connected to ESP32 at {esp32_ip}")
-    
-    # Setup WebSocket connection
-    ws = websocket.WebSocketApp(ws_url,
-                                on_open=on_open,
-                                on_message=on_message,
-                                on_error=on_error,
-                                on_close=on_close)
-    
-    # Start WebSocket client in a separate thread
-    wst = threading.Thread(target=ws.run_forever)
-    wst.daemon = True
-    wst.start()
-    
-    return ws
+            # Read available data
+            if ser.in_waiting > 0:
+                byte = ser.read(1)
+                
+                # Check for start marker
+                if byte == b'S':
+                    buffer = bytearray()
+                    reading_data = True
+                    continue
+                
+                # Check for end marker
+                elif byte == b'E' and reading_data:
+                    reading_data = False
+                    
+                    # If we got 14 values, update spectrum data
+                    if len(buffer) == 14:
+                        with data_lock:
+                            spectrum_data = list(buffer)
+                    else:
+                        print(f"Received incorrect data length: {len(buffer)}")
+                    
+                # Add to buffer if we're in reading mode
+                elif reading_data:
+                    buffer.extend(byte)
+            
+            else:
+                # Small delay to prevent CPU hogging
+                time.sleep(0.01)
+                
+        except Exception as e:
+            print(f"Error reading serial data: {e}")
+            time.sleep(0.1)
 
 # Setup the matplotlib figure for visualization
 def setup_visualization():
@@ -105,14 +125,24 @@ def update_plot(frame, bars):
     return bars
 
 def main():
+    print("Available ports:")
+    for port in serial.tools.list_ports.comports():
+        print(f" - {port.device}: {port.description}")
+
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='ESP32 Spectrum Analyzer Display')
-    parser.add_argument('--ip', default='192.168.4.1', 
-                        help='IP address of the ESP32 (default: 192.168.4.1)')
+    parser = argparse.ArgumentParser(description='ESP32 Serial Spectrum Analyzer Display')
+    parser.add_argument('--port', default='/dev/ttyUSB0', 
+                        help='Serial port (default: /dev/ttyUSB0, for Windows try COM1, COM2, etc.)')
+    parser.add_argument('--baud', type=int, default=115200,
+                        help='Baud rate (default: 115200)')
     args = parser.parse_args()
     
-    # Connect to the ESP32
-    ws = connect_websocket(args.ip)
+    # Connect to the ESP32 via serial
+    ser = connect_serial(args.port, args.baud)
+    
+    # Start the serial reading thread
+    serial_thread = threading.Thread(target=read_serial_data, args=(ser,), daemon=True)
+    serial_thread.start()
     
     # Setup visualization
     fig, ax, bars = setup_visualization()
@@ -124,10 +154,11 @@ def main():
     plt.tight_layout()
     plt.show()
     
-    # Close WebSocket connection when done
-    ws.close()
+    # Close serial port when done
+    ser.close()
 
 if __name__ == "__main__":
-    # Enable websocket debug if needed
-    # websocket.enableTrace(True)
+    print("Starting ESP32 Serial Spectrum Analyzer...")
+    print("Make sure you have installed pyserial:")
+    print("pip3 install pyserial matplotlib numpy")
     main()
